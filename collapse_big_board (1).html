@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Коллапс — большая доска</title>
+<style>
+:root{--bg:#071b35;--panel:#102d50;--gold:#ffd76a;--muted:#a9c5e5}
+*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:radial-gradient(circle at 50% 0,#15558c,#07172e 70%);color:#fff;font-family:system-ui,Arial,sans-serif}
+#app{height:100dvh;display:flex;flex-direction:column;gap:8px;padding:10px;max-width:1100px;margin:auto}
+header{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}
+h1{font-size:clamp(20px,4vw,30px);margin:0;color:var(--gold);text-shadow:0 2px 4px #000}
+#status{font-weight:700;color:#fff;background:#12385e;border:1px solid #3674a8;border-radius:12px;padding:8px 12px;flex:1;min-width:180px;text-align:center}
+.controls{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+button,select{border:1px solid #4e83b4;border-radius:10px;padding:9px 12px;background:#174875;color:#fff;font-weight:700;font-size:14px}
+button:active{transform:scale(.97)}button.primary{background:linear-gradient(#ffe27b,#f2a900);color:#392300;border:1px solid #fff}
+#boardWrap{position:relative;flex:1;min-height:0;border:5px solid #87451f;border-radius:18px;background:#9b5428;box-shadow:0 8px 22px #0008;overflow:hidden;touch-action:none}
+canvas{display:block;width:100%;height:100%;touch-action:none}
+#hint{font-size:12px;color:#c5dcf4;text-align:center}
+#setup{position:absolute;inset:0;background:#06162beF;display:flex;align-items:center;justify-content:center;padding:16px;z-index:5}
+.dialog{width:min(440px,100%);background:#12365b;border:2px solid #64a4d8;border-radius:18px;padding:18px;box-shadow:0 12px 35px #0009}
+.dialog h2{margin:0 0 12px;color:var(--gold)}.field{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:12px 0}.field label{font-weight:600}
+.dialog p{color:#d5e7f8;font-size:13px;line-height:1.45}.dialog button{width:100%;margin-top:8px}
+#bottom{display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap;font-size:12px;color:var(--muted)}
+#players{display:flex;gap:5px;flex-wrap:wrap}.tag{padding:5px 8px;border-radius:8px;background:#12385e;border:1px solid #315f88;font-size:12px}
+@media(max-width:600px){#app{padding:7px;gap:6px}.controls button{padding:8px;font-size:12px}.controls select{padding:8px;font-size:12px}#hint{font-size:11px}}
+</style></head>
+<body><div id="app">
+<header><h1>💥 КОЛЛАПС</h1><div id="status">Настрой игру</div></header>
+<div class="controls">
+<button id="newBtn">Новая игра</button><button id="zoomOut">−</button><button id="zoomIn">+</button><button id="centerBtn">Центр</button>
+</div>
+<div id="boardWrap"><canvas id="board"></canvas>
+<div id="setup"><div class="dialog">
+<h2>Новая партия</h2>
+<div class="field"><label for="mode">Режим</label><select id="mode"><option value="bots">Против ботов</option><option value="local">На одном устройстве</option></select></div>
+<div class="field"><label for="count">Количество игроков</label><select id="count"><option>2</option><option>3</option><option>4</option><option>5</option><option>6</option></select></div>
+<div class="field" id="diffRow"><label for="difficulty">Сила ботов</label><select id="difficulty"><option value="smart">Сильные</option><option value="normal">Обычные</option></select></div>
+<p>Поле 100 × 120 клеток. Перемещай поле пальцем, увеличивай двумя пальцами или кнопками +/−. В начале каждый игрок ставит одну фишку. Затем нажимай только на свои фишки.</p>
+<button class="primary" id="startBtn">НАЧАТЬ ИГРУ</button>
+</div></div></div>
+<div id="bottom"><div id="players"></div><div id="hint">Касайся фишки, чтобы повысить её уровень • 4-й уровень взрывается</div></div>
+</div>
+<script>
+(()=>{
+const W=100,H=120,N=W*H,colors=['#ef334d','#1685f5','#19bd54','#ffc928','#b44ee8','#ff7b22'];
+const names=['Красный','Синий','Зелёный','Жёлтый','Фиолетовый','Оранжевый'];
+const cv=document.getElementById('board'),ctx=cv.getContext('2d'),wrap=document.getElementById('boardWrap');
+let owner=new Int8Array(N);owner.fill(-1);let level=new Uint8Array(N);
+let players=2,mode='bots',difficulty='smart',turn=0,placed=0,alive=[],started=false,gameOver=false;
+let cell=24,scale=1,ox=0,oy=0,drag=null,lastTap=0,botBusy=false;
+function resize(){let r=wrap.getBoundingClientRect(),d=Math.min(devicePixelRatio||1,2);cv.width=Math.max(1,Math.floor(r.width*d));cv.height=Math.max(1,Math.floor(r.height*d));ctx.setTransform(d,0,0,d,0,0);if(!ox&&!oy){scale=Math.min(r.width/(14*cell),r.height/(14*cell));ox=(r.width-14*cell*scale)/2;oy=(r.height-14*cell*scale)/2;}draw()}
+window.addEventListener('resize',resize);
+function idx(x,y){return y*W+x}function xy(i){return [i%W,Math.floor(i/W)]}
+function countPieces(p){let c=0;for(let i=0;i<N;i++)if(owner[i]===p)c++;return c}
+function setStatus(s){document.getElementById('status').textContent=s}
+function updatePlayers(){let el=document.getElementById('players');el.innerHTML='';for(let p=0;p<players;p++){let d=document.createElement('span');d.className='tag';d.style.borderColor=colors[p];d.textContent=(mode==='bots'&&p>0?'🤖 ':'')+names[p]+': '+countPieces(p);el.appendChild(d)}}
+function fit(){let r=wrap.getBoundingClientRect();scale=Math.min(r.width/(14*cell),r.height/(14*cell));ox=(r.width-14*cell*scale)/2;oy=(r.height-14*cell*scale)/2;draw()}
+function draw(){
+ let r=wrap.getBoundingClientRect(),cw=r.width,ch=r.height;ctx.clearRect(0,0,cw,ch);ctx.fillStyle='#a96030';ctx.fillRect(0,0,cw,ch);
+ let s=cell*scale, x0=Math.max(0,Math.floor(-ox/s)),y0=Math.max(0,Math.floor(-oy/s)),x1=Math.min(W,Math.ceil((cw-ox)/s)),y1=Math.min(H,Math.ceil((ch-oy)/s));
+ for(let y=y0;y<y1;y++)for(let x=x0;x<x1;x++){let px=ox+x*s,py=oy+y*s,i=idx(x,y);
+ ctx.fillStyle=((x+y)&1)?'#ffe08a':'#ffdc7a';ctx.fillRect(px+1,py+1,s-2,s-2);
+ if(owner[i]>=0){let rad=s*(.36+level[i]*.018);ctx.beginPath();ctx.arc(px+s/2,py+s/2,rad,0,Math.PI*2);ctx.fillStyle=colors[owner[i]];ctx.fill();ctx.lineWidth=Math.max(1,s*.045);ctx.strokeStyle='#ffffffaa';ctx.stroke();
+ ctx.fillStyle='white';let dots=level[i],rr=Math.max(1.4,s*.065),positions=dots===1?[[0,0]]:dots===2?[[-.13,0],[.13,0]]:dots===3?[[-.12,-.1],[.12,-.1],[0,.13]]:[[-.13,-.13],[.13,-.13],[-.13,.13],[.13,.13]];
+ for(let q of positions){ctx.beginPath();ctx.arc(px+s/2+q[0]*s,py+s/2+q[1]*s,rr,0,Math.PI*2);ctx.fill()}
+ }}
+}
+function screenCell(clientX,clientY){let r=wrap.getBoundingClientRect(),s=cell*scale;let x=Math.floor((clientX-r.left-ox)/s),y=Math.floor((clientY-r.top-oy)/s);return x>=0&&x<W&&y>=0&&y<H?idx(x,y):-1}
+function zoom(f,cx,cy){let r=wrap.getBoundingClientRect();cx=cx??r.width/2;cy=cy??r.height/2;let wx=(cx-ox)/scale,wy=(cy-oy)/scale;scale=Math.max(.18,Math.min(4,scale*f));ox=cx-wx*scale;oy=cy-wy*scale;draw()}
+function nextTurn(){let old=turn;for(let k=1;k<=players;k++){let p=(old+k)%players;if(alive[p]&&countPieces(p)>0){turn=p;return}}}
+function checkWinner(){let present=[];for(let p=0;p<players;p++)if(countPieces(p)>0)present.push(p);if(present.length===1&&placed>=players){gameOver=true;setStatus('🏆 Победил: '+names[present[0]]);return true}return false}
+function explode(start,p){
+ let queue=[start],head=0,steps=0;
+ while(head<queue.length&&steps<200000){let i=queue[head++];steps++;if(owner[i]!==p||level[i]<4)continue;
+ owner[i]=-1;level[i]=0;let [x,y]=xy(i),ns=[];if(y>0)ns.push(i-W);if(y<H-1)ns.push(i+W);if(x>0)ns.push(i-1);if(x<W-1)ns.push(i+1);
+ for(let j of ns){if(owner[j]===-1){owner[j]=p;level[j]=1}else{owner[j]=p;level[j]++;if(level[j]>=4)queue.push(j)}}
+ }
+}
+function playCell(i){
+ if(!started||gameOver||botBusy||i<0)return;
+ if(placed<players){if(owner[i]!==-1)return;owner[i]=turn;level[i]=1;placed++;if(placed<players){turn=(turn+1)%players;setStatus('Стартовая фишка: '+names[turn]);}else{nextTurn();setStatus('Ход: '+names[turn]);}updatePlayers();draw();maybeBot();return}
+ if(owner[i]!==turn)return;
+ level[i]++;if(level[i]>=4)explode(i,turn);
+ if(checkWinner()){updatePlayers();draw();return}
+ nextTurn();setStatus('Ход: '+names[turn]);updatePlayers();draw();maybeBot();
+}
+function legalMoves(p){let a=[];for(let i=0;i<N;i++)if(owner[i]===p)a.push(i);return a}
+function quickScore(i,p){
+ let [x,y]=xy(i),score=0,near=0,enemy=0,own=0;
+ let ns=[];if(y>0)ns.push(i-W);if(y<H-1)ns.push(i+W);if(x>0)ns.push(i-1);if(x<W-1)ns.push(i+1);
+ for(let j of ns){if(owner[j]===-1)near++;else if(owner[j]===p)own++;else enemy++}
+ score=level[i]*1.7+enemy*7+own*2.5+near*.25;
+ if(level[i]===3)score+=enemy*5+own*2;
+ if(level[i]===1&&enemy===0)score-=1;
+ return score;
+}
+function chooseBotMove(p){
+ let moves=legalMoves(p);if(!moves.length)return -1;
+ if(difficulty==='normal')return moves[Math.floor(Math.random()*moves.length)];
+ let ranked=moves.map(i=>[quickScore(i,p)+Math.random()*.12,i]).sort((a,b)=>b[0]-a[0]).slice(0,36);
+ let best=ranked[0][1],bestScore=-1e9;
+ for(let [base,i] of ranked.slice(0,18)){
+   // Evaluate immediate tactical consequences without mutating the live board.
+   let score=base;
+   let [x,y]=xy(i),ns=[];if(y>0)ns.push(i-W);if(y<H-1)ns.push(i+W);if(x>0)ns.push(i-1);if(x<W-1)ns.push(i+1);
+   if(level[i]===3){for(let j of ns)if(owner[j]>=0&&owner[j]!==p)score+=12+level[j]*2}
+   // Avoid creating an easy level-four target adjacent to an opponent's high-level piece.
+   for(let j of ns)if(owner[j]>=0&&owner[j]!==p&&level[j]>=2)score-=level[j]*1.5;
+   if(score>bestScore){bestScore=score;best=i}
+ }
+ return best;
+}
+function maybeBot(){
+ if(mode!=='bots'||turn===0||gameOver||botBusy)return;
+ botBusy=true;setTimeout(()=>{
+   if(gameOver){botBusy=false;return}
+   if(placed<players){
+     let i=Math.floor(N/2);
+     if(owner[i]!==-1){let tries=0;do{i=Math.floor(Math.random()*N)}while(owner[i]!==-1&&++tries<5000)}
+     owner[i]=turn;level[i]=1;placed++;if(placed<players){turn=(turn+1)%players;}else{nextTurn();}
+     updatePlayers();draw();setStatus(placed<players?'Стартовая фишка: '+names[turn]:'Ход: '+names[turn]);
+     botBusy=false;if(!gameOver)maybeBot();return;
+   }
+   let i=chooseBotMove(turn);if(i>=0){level[i]++;if(level[i]>=4)explode(i,turn);if(!checkWinner())nextTurn();}
+   updatePlayers();draw();if(!gameOver)setStatus('Ход: '+names[turn]);botBusy=false;if(!gameOver)maybeBot();
+ },420);
+}
+function start(){
+ mode=document.getElementById('mode').value;players=+document.getElementById('count').value;difficulty=document.getElementById('difficulty').value;
+ owner.fill(-1);level.fill(0);turn=0;placed=0;alive=Array(players).fill(true);started=true;gameOver=false;botBusy=false;
+ document.getElementById('setup').style.display='none';setStatus('Стартовая фишка: '+names[turn]);updatePlayers();fit();
+}
+document.getElementById('startBtn').onclick=start;
+document.getElementById('newBtn').onclick=()=>document.getElementById('setup').style.display='flex';
+document.getElementById('mode').onchange=e=>document.getElementById('diffRow').style.display=e.target.value==='bots'?'flex':'none';
+document.getElementById('zoomIn').onclick=()=>zoom(1.25);document.getElementById('zoomOut').onclick=()=>zoom(.8);
+document.getElementById('centerBtn').onclick=fit;
+let pointers=new Map(),pinch0=null;
+cv.addEventListener('pointerdown',e=>{cv.setPointerCapture(e.pointerId);pointers.set(e.pointerId,{x:e.clientX,y:e.clientY});if(pointers.size===1)drag={x:e.clientX,y:e.clientY,ox,oy,moved:false};if(pointers.size===2){let a=[...pointers.values()];pinch0={dist:Math.hypot(a[0].x-a[1].x,a[0].y-a[1].y),scale,cx:(a[0].x+a[1].x)/2-wrap.getBoundingClientRect().left,cy:(a[0].y+a[1].y)/2-wrap.getBoundingClientRect().top};drag=null}});
+cv.addEventListener('pointermove',e=>{if(!pointers.has(e.pointerId))return;pointers.set(e.pointerId,{x:e.clientX,y:e.clientY});if(pointers.size===2&&pinch0){let a=[...pointers.values()],d=Math.hypot(a[0].x-a[1].x,a[0].y-a[1].y);zoom(d/pinch0.dist,pinch0.cx,pinch0.cy);pinch0.dist=d;return}if(drag){let dx=e.clientX-drag.x,dy=e.clientY-drag.y;if(Math.abs(dx)+Math.abs(dy)>5)drag.moved=true;ox=drag.ox+dx;oy=drag.oy+dy;draw()}});
+cv.addEventListener('pointerup',e=>{let was=drag;let p=pointers.get(e.pointerId);pointers.delete(e.pointerId);if(pointers.size<2)pinch0=null;if(was&&!was.moved&&pointers.size===0){let i=screenCell(e.clientX,e.clientY);playCell(i)}drag=null});
+cv.addEventListener('pointercancel',e=>{pointers.delete(e.pointerId);drag=null;pinch0=null});
+cv.addEventListener('wheel',e=>{e.preventDefault();let r=wrap.getBoundingClientRect();zoom(e.deltaY<0?1.12:.89,e.clientX-r.left,e.clientY-r.top)},{passive:false});
+resize();document.getElementById('diffRow').style.display='flex';
+})();
+</script></body></html>
