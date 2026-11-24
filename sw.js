@@ -1,4 +1,4 @@
-const CACHE_NAME = 'collapse-app-v3';
+const CACHE_NAME = 'collapse-app-v4';
 const APP_FILES = [
   './',
   './index.html',
